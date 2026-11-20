@@ -1,25 +1,44 @@
-# EvoRAG
+# EvoRAG 2.0
 
-EvoRAG is a research platform for adaptive retrieval-augmented generation. It includes a React dashboard, a FastAPI API, PostgreSQL with pgvector, Redis, and a durable ingestion worker.
+EvoRAG is a local research platform for adaptive retrieval-augmented generation. It turns versioned documents into a searchable corpus, generates answers with traceable citations, and lets an independent Teacher RAG review those answers. Administrators can verify, approve, publish, and roll back proposed knowledge corrections. The Research Lab compares retrieval and answer quality across versioned configurations.
 
-## Prerequisites
+[Architecture](#architecture) · [Quick start](#quick-start) · [Using the dashboard](#using-the-dashboard) · [API](#api) · [Development](#development) · [Verification](#verification) · [Operations](#operations) · [Current limits](#current-limits)
 
-- Docker Engine with Docker Compose v2. On Windows, start Docker Desktop in Linux container mode.
-- Python 3.12 and [uv](https://docs.astral.sh/uv/getting-started/installation/). If Python 3.12 is missing, run `uv python install 3.12`.
-- Node.js 22.13+ on the 22.x line, or 24+.
+## Architecture
 
-## Start with Docker Compose
+![EvoRAG 2.0 architecture showing knowledge ingestion, adaptive Student RAG, independent Teacher RAG, and administrator-controlled publication](docs/architecture-neon.png)
 
-Copy `.env.example` to `.env` with `Copy-Item .env.example .env` in PowerShell or `cp .env.example .env` in a POSIX shell. Set `POSTGRES_PASSWORD` to a unique, locally generated password. The root `.env` is ignored by Git. Keep provider keys in backend variables. Values prefixed with `VITE_` are public.
+[Full-size architecture image](docs/architecture-neon.png) · [Service and deployment diagram](docs/architecture.png) · [Architecture decisions](docs/architecture.md)
+
+| Layer | Implementation |
+| --- | --- |
+| Dashboard and gateway | React, Vite, TypeScript, React Router, TanStack Query, and Recharts. Nginx serves the dashboard and proxies HTTP and server-sent events from the same origin. |
+| API and access | FastAPI, typed Pydantic settings, authenticated corpus access, owner-scoped conversations and runs, and administrator-only learning decisions. Sign-in uses an HttpOnly cookie with a short-lived, tab-scoped fallback for browsers that block cookies. |
+| Ingestion and indexing | A separate worker claims PostgreSQL jobs, validates and extracts source content, deduplicates by SHA-256, and writes versioned documents and chunks. The indexing command writes embeddings into a specific, compatible embedding space. |
+| Student RAG | Naive, Advanced, Corrective, Self-RAG, Agentic, Graph, Multi-query, HyDE, and Parent-child strategies. Auto selects a strategy and evidence depth. Advanced combines vector and BM25 search using reciprocal rank fusion and reranking. The API verifies citations before releasing answer text. |
+| Independent Teacher RAG | A separately configured retrieval and generation run. It checks the Student’s answer against its own evidence, saves claim-level findings, and returns pass, revise, or reject. A revise verdict can trigger bounded refinement. |
+| Controlled learning | User corrections create proposals. Verification checks evidence and applicable benchmark cases. An administrator can approve publication. The system indexes the staged version before switching the current version and can restore the prior one. |
+| Data and orchestration | PostgreSQL 17 with pgvector stores knowledge, sessions, queues, ranks, and audit records. Redis responds to readiness probes. LangGraph coordinates retrieval strategies and uses SQLite for workflow checkpoints. Alembic manages schema changes. |
+| Models and research | Ollama or Gemini generation, multiple embedding providers, benchmark datasets, experiment comparisons, and optional MLflow tracking and RAGAS scoring. |
+
+## Quick start
+
+### 1. Configure and start Docker Compose
+
+Use Docker Engine with Compose v2 and Linux containers. On Windows with Docker Desktop, start it in Linux container mode. Run the commands from the repository root.
+
+Copy `.env.example` to `.env` using `Copy-Item .env.example .env` in PowerShell or `cp .env.example .env` in a POSIX shell. Set a unique `POSTGRES_PASSWORD`. Keep provider keys in backend environment variables. Vite exposes values prefixed with `VITE_` to browser code.
 
 ```sh
 docker compose up --build -d --wait
 docker compose exec api python -m app.auth --email you@example.com
 ```
 
-Compose waits for PostgreSQL, applies Alembic migrations, seeds the RAG profiles, starts the API and worker, and serves the dashboard at [127.0.0.1:8080](http://127.0.0.1:8080). Use the account created by the second command to sign in. [OpenAPI documentation](http://127.0.0.1:8080/docs)
+The first command starts PostgreSQL and Redis, applies migrations and seeds, then starts the API, worker, and frontend. The second creates your administrator and prompts for a password of at least 12 characters. Open the [dashboard](http://127.0.0.1:8080/) and sign in with the account you created. Change the URL if you set `WEB_PORT`.
 
-For local Ollama, run it on an address the containers can reach and pull the models on the host. Docker defaults to `http://host.docker.internal:11434`. Change `OLLAMA_CONTAINER_URL` if your Docker installation needs a different address.
+### 2. Configure a model provider
+
+For local inference, start Ollama and make it reachable from the backend container. The Compose default is `http://host.docker.internal:11434`. Set `OLLAMA_CONTAINER_URL` if your Docker setup needs a different address.
 
 ```sh
 ollama pull qwen2.5:1.5b
@@ -28,75 +47,113 @@ docker compose exec api python -m app.rag.ollama_profile --primary qwen2.5:1.5b 
 docker compose exec api python -m app.rag.seed_strategies
 ```
 
-Upload a PDF in **Knowledge Base**. After the worker completes extraction, index the corpus into the Ollama embedding-space version printed by the profile command. Change `1` below if the profile printed a different version.
+Note the embedding-space version printed by the profile command. The example uses an extractive answer format for a small local model. For Gemini generation, set a valid backend `GEMINI_API_KEY`, apply the environment with `docker compose up -d --wait`, and index into the embedding space associated with the selected profile. [Model profiles and providers](docs/rag.md)
+
+### 3. Upload and index knowledge
+
+1. Open **Knowledge Base** and upload a PDF, DOCX, TXT, Markdown, CSV, or XLSX file. You can also import a public website or GitHub repository.
+2. Wait for the ingestion job to show **Completed**. Open **Document Inspector** to check extraction, chunk boundaries, page references, and version history.
+3. Run the index command for the selected space and version. Replace `1` with the value printed in step 2 if it differs. Run indexing again after ingesting new content.
 
 ```sh
 docker compose exec api python -m app.retrieval.index --space ollama --version 1
 ```
 
-Select an Ollama profile in the **RAG Playground**, ask a question, and enable the teacher review to see its independently retrieved evidence. To use Gemini generation, supply a valid `GEMINI_API_KEY` and index into the embedding space of the selected Gemini profile. [Provider and index setup](docs/rag.md)
+[Ingestion formats and limits](docs/ingestion.md) · [Embedding spaces and retrieval](docs/retrieval.md)
 
-## Run development servers
+## Using the dashboard
 
-Run commands from the repository root unless a step changes directories.
+| Area | What you can do |
+| --- | --- |
+| Dashboard | Check dependency readiness and recent workspace activity. |
+| RAG Playground | Ask questions, select a fixed strategy or **Auto**, inspect cited passages and scores, request teacher review, refine a revise verdict, and submit feedback. |
+| Knowledge Base and Document Inspector | Queue or retry ingestion and inspect document versions, chunks, and provenance. |
+| Teacher Center | Inspect saved verdicts, claim grades, independent evidence, and outcome counts. |
+| Learning Center | Verify a proposal, record an approval or rejection, publish and index an approved version, or roll it back. |
+| RAG Comparison Lab | Run the same question through multiple strategies and compare their answers and evidence. |
+| Benchmark Manager, Experiments, and Analytics | Version labeled datasets, run experiments, compare metrics, and export results. |
+| Memory Center | Inspect conversation history for the signed-in user. |
+| Model Registry, Workflow Manager, and Settings | Inspect available model versions, execution traces, runtime settings, and theme controls. |
 
-1. Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell or `cp .env.example .env` in a POSIX shell). Set `POSTGRES_PASSWORD` to a unique, locally generated password before starting. The root `.env` is ignored by Git. Only public values such as `VITE_API_BASE_URL` belong in variables prefixed with `VITE_`.
-2. Start and inspect the backing services.
+For a first pass, ask **RAG Playground** a question whose answer appears in your indexed document. Inspect the cited quote, then click **Review with teacher** to see the independent evidence and claim verification. If you submit a cited correction through **Give feedback**, review the proposal in **Learning Center** before publishing. [End-to-end walkthrough](docs/workflow.md) · [Teacher review](docs/teacher.md) · [Approval and rollback](docs/learning.md)
 
-   ```sh
-   docker compose up -d --wait postgres redis
-   docker compose ps
-   ```
+## API
 
-3. Open a terminal for the API.
+The Compose deployment serves [Swagger UI](http://127.0.0.1:8080/docs) and [OpenAPI JSON](http://127.0.0.1:8080/openapi.json). Protected routes accept the session cookie or an opaque bearer token from `POST /api/v1/auth/token`. Use the same base URL for the session and API calls.
 
-   ```sh
-   cd backend
-   uv sync --locked
-   uv run --locked alembic upgrade head
-   uv run --locked python -m app.db.seed
-   uv run --locked uvicorn app.main:create_app --factory --reload
-   ```
+| Operation | Method and path |
+| --- | --- |
+| Sign in, check a session, or sign out | `POST /api/v1/auth/login`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout` |
+| Upload a file or import a remote source | `POST /api/v1/ingestion/files`, `POST /api/v1/ingestion/remote` |
+| Inspect ingestion and documents | `GET /api/v1/ingestion/jobs/{job_id}`, `GET /api/v1/documents/{document_id}` |
+| Query and compare | `POST /api/v1/rag/query`, `POST /api/v1/rag/query/stream`, `POST /api/v1/rag/compare` |
+| Inspect an execution | `GET /api/v1/rag/runs/{run_id}` |
+| Review and refine | `POST /api/v1/teacher/reviews/{run_id}`, `POST /api/v1/teacher/reviews/{review_id}/refine` |
+| Submit feedback and review proposals | `POST /api/v1/rag/runs/{run_id}/feedback`, `GET /api/v1/learning/proposals` |
+| Manage benchmark datasets and experiments | `GET /api/v1/benchmarks/datasets`, `POST /api/v1/experiments`, `GET /api/v1/experiments/{experiment_id}` |
+| Check liveness and readiness | `GET /health`, `GET /ready` |
 
-4. Open another terminal for the web app.
+## Development
 
-   ```sh
-   cd frontend
-   npm ci
-   npm run dev
-   ```
+Use Python 3.12 with uv, plus Node.js 22.13 or later in the 22.x line, or Node.js 24 or later. Prepare the root `.env` as above. When switching from full Compose to host development, stop the full stack with `docker compose down` to release its web port and worker. The named volumes retain data.
 
-Open [the dashboard](http://127.0.0.1:5173) and [the API documentation](http://127.0.0.1:8000/docs). Use the same host name for both applications so the browser can send the session cookie. If you change the frontend origin or API port, update `CORS_ORIGINS` or `VITE_API_BASE_URL` respectively and restart the corresponding server.
+```sh
+docker compose up -d --wait postgres redis
+cd backend
+uv sync --locked
+uv run --locked alembic upgrade head
+uv run --locked python -m app.db.seed
+uv run --locked python -m app.rag.seed_strategies
+uv run --locked python -m app.auth --email you@example.com
+uv run --locked uvicorn app.main:create_app --factory --reload
+```
 
-To process knowledge uploads, start `uv run --locked python -m app.ingestion.worker` from `backend/` in another terminal. See [ingestion setup and API examples](docs/ingestion.md).
+Create the administrator only if you need a new account. Start the ingestion worker and frontend in separate terminals.
 
-See [embedding setup and retrieval benchmark](docs/retrieval.md) for indexing, supported model configurations, and measured fixture results.
+```sh
+cd backend
+uv run --locked python -m app.ingestion.worker
+```
 
-See [RAG setup](docs/rag.md) for creating a local account, configuring Gemini or Ollama, and querying the indexed corpus.
+```sh
+cd frontend
+npm ci
+npm run dev
+```
 
-See [Teacher RAG](docs/teacher.md) for independent reviews, refinement, and the labeled verification cases.
+Open [Vite on port 5173](http://127.0.0.1:5173) or [FastAPI on port 8000](http://127.0.0.1:8000/docs). Use the same hostname for both. Match any changed frontend origin in `CORS_ORIGINS` and update `VITE_API_BASE_URL` if you move the API.
 
-See [strategy workflows](docs/strategies.md) for enabling alternative pipelines and comparing them on one question.
+### Configuration reference
 
-See [controlled learning](docs/learning.md) for feedback, proposal review, publication, and rollback.
+| Variables | Purpose |
+| --- | --- |
+| `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT` | Database credentials and address. Compose supplies its internal service name to the backend. |
+| `REDIS_HOST`, `REDIS_PORT`, `WEB_PORT` | Redis connection and published web port. |
+| `CORS_ORIGINS`, `VITE_API_BASE_URL`, `SESSION_COOKIE_SECURE` | Development API access and session cookie security. Use secure cookies with HTTPS. |
+| `OLLAMA_URL`, `OLLAMA_CONTAINER_URL`, `GEMINI_API_KEY` | Backend provider settings for host or container execution. |
+| `MAX_UPLOAD_BYTES`, `MAX_REMOTE_BYTES`, `LOG_LEVEL`, `TEACHER_MAX_REFINEMENTS` | Ingestion limits, logging, and the maximum number of teacher-guided refinement attempts. |
+| `MLFLOW_TRACKING_URI`, `EVORAG_ENABLE_RAGAS`, `RAGAS_OLLAMA_MODEL` | Optional experiment tracking and RAGAS scoring. Rebuild the image after enabling the RAGAS dependency. |
+| `WORKFLOW_CHECKPOINT_DB` | SQLite checkpoint path. Compose stores it under its persistent application volume. |
 
-See [research evaluation](docs/evaluation.md) for versioned labeled cases, result exports, model tracking, and running experiments.
+[Environment template](.env.example) · [Database schema and migrations](docs/database.md) · [Evaluation setup](docs/evaluation.md)
 
-## Verify
+## Verification
 
-From the root, use `curl.exe` on Windows or `curl` on macOS/Linux.
+Use `curl.exe` in PowerShell and `curl` in a POSIX shell. Adjust the ports and PostgreSQL names if you changed them in `.env`.
 
 ```sh
 docker compose ps
+docker compose exec -T api alembic current
+docker compose exec -T api alembic check
 docker compose exec -T postgres psql -U evorag -d evorag -Atqc "SELECT vector_dims(ARRAY[1]::vector)"
 docker compose exec -T redis redis-cli ping
 curl --fail http://127.0.0.1:8080/health
 curl --fail http://127.0.0.1:8080/ready
 ```
 
-Use the configured `POSTGRES_USER` and `POSTGRES_DB` in the `psql` command if you changed them. For development servers, check port 8000. Expect healthy containers, a vector dimension of `1`, `PONG`, `{"status":"ok"}`, and `{"status":"ready","checks":{"postgres":true,"redis":true}}`. If a backing service is unavailable, `/ready` returns HTTP 503 with the failing check and `/health` still returns HTTP 200.
+Expect the current migration, no schema drift, vector dimension `1`, Redis `PONG`, and readiness with both dependencies marked true. A dependency failure returns HTTP 503 from `/ready` while `/health` continues to report API liveness.
 
-Run the backend checks from `backend/`.
+Run backend checks from `backend/` and frontend checks from `frontend/`.
 
 ```sh
 uv run --locked pytest
@@ -104,9 +161,7 @@ uv run --locked ruff check .
 uv run --locked ruff format --check .
 ```
 
-Set `EVORAG_DB_TESTS=1` to enable the PostgreSQL integration tests, then run `uv run --locked pytest` from `backend/`. The tests require access to the local PostgreSQL server and permission to create disposable test databases and install pgvector. See [database setup and schema](docs/database.md) for migration commands and test isolation.
-
-Run the frontend checks from `frontend/`.
+Set `EVORAG_DB_TESTS=1` to enable the PostgreSQL integration suite before running pytest. In PowerShell use `$env:EVORAG_DB_TESTS = '1'`. The configured database role needs permission to create disposable test databases and install pgvector in them.
 
 ```sh
 npm run lint
@@ -114,22 +169,37 @@ npm run format:check
 npm run build
 ```
 
-## Stop and troubleshoot
+The recorded 2.0 verification passed 53 backend tests with database integration enabled and authenticated browser checks on all 14 dashboard pages at desktop and mobile widths. On one research-PDF question, fixed Advanced and Auto both answered correctly with a citation. Auto used 221 generation input tokens compared with 366, and its cited chunk ranked second compared with first for fixed Advanced. This single case demonstrates a trade-off and has limited value for judging overall accuracy or latency. [Measured benchmark report](docs/evaluation-report.md) · [2.0 verification and improvement log](docs/audits/IMPROVEMENT_LOG.md)
 
-For development, stop the API, worker, and Vite with Ctrl+C. Run `docker compose down` to stop Compose. Named volumes retain PostgreSQL, Redis, and workflow checkpoints.
+## Operations
 
-| Symptom | Check |
+Stop host development processes with Ctrl+C. Stop Compose with `docker compose down`. Named volumes retain PostgreSQL, Redis, and workflow checkpoints. Use `docker compose logs migrate api worker frontend` for startup or request diagnostics.
+
+For a PostgreSQL archive and recovery check, run from the root with Python 3.12. Pick a new archive path and a new restore database name.
+
+```sh
+python scripts/database.py backup evorag-backup.dump
+python scripts/database.py restore evorag-backup.dump --database evorag_restore
+```
+
+The restore target is a separate database. Protect backup files as you would the live corpus. Preserve the checkpoint volume, MLflow storage, and model files separately when those artifacts are needed. [Backup, restore, and deployment guide](docs/deployment.md)
+
+| Symptom | What to check |
 | --- | --- |
-| Docker daemon unavailable | Start Docker Desktop or your Docker Engine, then check `docker info`. |
-| A published port is already in use | Change `WEB_PORT`, `POSTGRES_PORT`, or `REDIS_PORT` in `.env` and run `docker compose up -d --wait`. Update the development API environment as needed. |
-| PostgreSQL password changed after first startup | The PostgreSQL image applies initialization settings to empty volumes. Change the password in the existing database before updating `.env`. |
-| PostgreSQL readiness fails | Check `docker compose logs postgres`. The pgvector initialization script runs on a fresh volume. For an existing database, a database administrator can run `CREATE EXTENSION IF NOT EXISTS vector;` in the configured database. |
-| Browser cannot check the API | Check `VITE_API_BASE_URL`, the API server, and the exact browser origin in the JSON array `CORS_ORIGINS`. |
-| Compose exits during startup | Inspect `docker compose logs migrate api worker frontend`. Fix the first failing service and rerun startup. |
-| Upload completes without vector results | Run the index command for the selected embedding space and version. Inspect job status and chunk content before indexing. |
+| Compose cannot reach Docker | Start the engine and check `docker info`. |
+| Container fails to start | Check `docker compose logs migrate api worker frontend` and `docker compose ps -a`. |
+| PostgreSQL is unhealthy | Check the configured role, database, password, and pgvector extension. Changing the password in `.env` does not update an existing PostgreSQL role. |
+| Dashboard loads without API access | Check `/ready`. For host development, verify the API base URL and the exact configured CORS origin. |
+| Ollama generation or embedding fails | Check the provider address from inside the API container and confirm the configured model artifacts were pulled. |
+| Upload completed and vector search returns no results | Inspect the chunks and run the index command for the space and version used by the selected RAG profile. |
+| WSL Docker build or loopback port fails | Build from a Linux filesystem when the Windows mount rejects file metadata. Check the WSL port forwarding configuration. The tested dedicated WSL setup used port 18080 through a loopback relay. [WSL deployment notes](docs/deployment.md) |
 
-When Docker Engine runs directly in WSL and port forwarding fails, run FastAPI in the same distribution as Docker. Set `UV_PROJECT_ENVIRONMENT` to a Linux path to keep its virtual environment separate from the Windows environment. If the published service ports also time out inside WSL, use `docker inspect` to find the PostgreSQL and Redis addresses on the private Compose network. Set `POSTGRES_HOST` and `REDIS_HOST` in the API process environment and look up the addresses again after recreating containers.
+## Current limits
 
-See the [architecture diagram](docs/architecture.md) and [end-to-end workflow guide](docs/workflow.md) for module boundaries and operating steps. See [deployment operations](docs/deployment.md) for backup, restore, and known limitations. [Measured benchmark report](docs/evaluation-report.md)
+- The corpus is shared among signed-in workspace users. Conversations and runs are scoped to their owners, and learning decisions require an administrator.
+- Scanned PDFs require an OCR adapter. Multi-column PDF reading order and table extraction depend on the source layout.
+- Teacher claim segmentation and scoring use bounded independent context. Verified quotes establish provenance, and semantic judgment still depends on the teacher model.
+- The recorded model runs used local Ollama. A valid key and a compatible embedding space are required for Gemini configurations. RAGAS is optional and was outside the recorded one-case benchmark.
+- The AI Supervisor, separate episodic and semantic memory, and broader before-and-after benchmarks remain on the 2.0 roadmap.
 
-The [EvoRAG 2.0 technical audit](docs/audits/INITIAL_TECHNICAL_AUDIT.md) records the starting point and prioritized roadmap. The [improvement log](docs/audits/IMPROVEMENT_LOG.md) records changes, regression checks, and measured outcomes.
+[Technical audit and roadmap](docs/audits/INITIAL_TECHNICAL_AUDIT.md) · [Improvement log](docs/audits/IMPROVEMENT_LOG.md)
