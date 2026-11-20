@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "source": "https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf",
+  "cases": [
+    {
+      "key": "pilot-damping-constant",
+      "question": "According to the paper, what value of k was fixed during the pilot investigation?",
+      "expected_pattern": "\\b60\\b"
+    }
+  ]
+}

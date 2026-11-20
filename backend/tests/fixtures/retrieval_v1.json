@@ -1,0 +1,16 @@
+{
+  "documents": [
+    {"key": "vectors", "text": "Pgvector stores embeddings and compares them using cosine similarity. HNSW is a graph index for approximate nearest neighbors.", "vector": [1, 0, 0, 0]},
+    {"key": "transactions", "text": "A PostgreSQL row lock serializes concurrent document version assignments. A rollback restores transaction consistency.", "vector": [0, 1, 0, 0]},
+    {"key": "fusion", "text": "Reciprocal rank fusion combines ranked retrieval lists by summing the inverse of each result rank plus a damping constant.", "vector": [0, 0, 1, 0]},
+    {"key": "sources", "text": "Source provenance records the origin, page number, snapshot hash and revision of knowledge chunks. Audit logs preserve reviewer decisions.", "vector": [0, 0, 0, 1]},
+    {"key": "git", "text": "Git assigns a content hash to a blob. A Git commit tracks a repository tree, its parent commits and author information.", "vector": [0.2, 0.1, 0.1, 0.5]},
+    {"key": "pg-trgm", "text": "The PostgreSQL pg_trgm extension stores trigram indexes and supports similarity of text values.", "vector": [0.7, 0.1, 0.2, 0]}
+  ],
+  "queries": [
+    {"text": "How does HNSW index vectors?", "relevant": "vectors", "vector": [1, 0, 0, 0]},
+    {"text": "Which mechanism prevents simultaneous version writes?", "relevant": "transactions", "vector": [0, 1, 0, 0]},
+    {"text": "How does reciprocal rank fusion combine retrieval candidates?", "relevant": "fusion", "vector": [0, 0, 1, 0]},
+    {"text": "Where did a knowledge chunk come from?", "relevant": "sources", "vector": [0, 0, 0, 1]}
+  ]
+}
